@@ -3,6 +3,8 @@ package main
 import "fmt"
 import "log"
 import "net/http"
+import "flag"
+import "time"
 import "database/sql"
 import _ "github.com/go-sql-driver/mysql"
 
@@ -38,41 +40,92 @@ func checkLiveSlave(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func getStatus() {
-	db, err := sql.Open("mysql", "mha:*@/")
+func getStatus(username, password string, interval time.Duration) {
+
+	firstCheck := true
+	db, err := sql.Open("mysql", username+":"+password+"@/")
 	defer db.Close()
 
 	if err != nil {
-		log.Println("mysql Open return with :", err)
+		log.Println("mysql Open return err with :", err)
 	}
 
-	//check if the server is master
-	dbMaster := false
-	rows, err := db.Query("show variables like 'read_only';")
-	defer rows.Close()
+	for {
+		//check if the server is master
+		dbMaster := false
+		dbSlave := false
+		dbRuns := false
 
-	if err := rows.Err(); err == nil {
-		for rows.Next() {
-			var variable string
-			if err := rows.Scan(&variable); err == nil {
-				if variable == "OFF" {
-					dbMaster = true
-					break
+		rows, err := db.Query("show variables like 'read_only';")
+		if err == nil {
+			dbRuns = true
+			if err := rows.Err(); err == nil {
+				for rows.Next() {
+					var name, value string
+					if err := rows.Scan(&name, &value); err != nil {
+						log.Println("mysql Open return err with :", err)
+					} else {
+						log.Printf("mysql Open return with name=%v value=%v\n", name, value)
+						if value == "OFF" {
+							dbMaster = true
+							break
+						}
+					}
+
 				}
 			}
+			rows.Close()
+
+		} else {
+			log.Println("mysql Open return err with :", err)
 		}
+
+		if !dbMaster {
+			//chech the if slave avaliable to use
+			rows, err = db.Query("SHOW SLAVE STATUS;")
+			if err == nil {
+				dbRuns = true
+				if err := rows.Err(); err == nil {
+					for rows.Next() {
+						var name, value string
+						if err := rows.Scan(&name, &value); err != nil {
+							log.Println("mysql Open return err with :", err)
+						} else {
+							log.Printf("mysql Open return with name=%v value=%v\n", name, value)
+							if value == "OFF" {
+								dbSlave = false
+								break
+							}
+						}
+
+					}
+				}
+				rows.Close()
+			} else {
+				log.Println("mysql Open return err with :", err)
+			}
+		}
+
+		gDBMaster = dbMaster
+		gDBSlave = dbSlave
+		gDBRuns = dbRuns
+
+		if firstCheck {
+			hasStatus <- true
+			firstCheck = false
+		}
+		time.Sleep(interval * time.Second)
 	}
-
-	gDBMaster = dbMaster
-
-	hasStatus <- true
 }
 
 func main() {
+	username := flag.String("u", "", "user name")
+	password := flag.String("p", "", "password")
+	interval := flag.Int64("i", 1, "interval of the check")
 
 	log.Println("mysql_ms_checker start")
 	//Goroutines
-	go getStatus()
+	go getStatus(*username, *password, time.Duration(*interval))
 	<-hasStatus
 
 	log.Println("mysql_ms_checker finish getStatus")
