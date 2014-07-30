@@ -5,6 +5,7 @@ import "log"
 import "net/http"
 import "flag"
 import "time"
+import "strconv"
 import "database/sql"
 import _ "github.com/go-sql-driver/mysql"
 
@@ -40,7 +41,56 @@ func checkLiveSlave(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func getStatus(username, password string, interval time.Duration) {
+func getQueryResult(db *sql.DB, query string) (result map[string]string, err error) {
+	//var result map[string]string
+	rows, err := db.Query(query)
+	defer rows.Close()
+
+	if err == nil {
+		columns, err := rows.Columns()
+		if err != nil {
+			log.Println("mysql Query return err with :", err)
+			return result, err
+		}
+
+		// Make a slice for the values
+		values := make([]sql.RawBytes, len(columns))
+
+		// rows.Scan wants '[]interface{}' as an argument, so we must copy the
+		// references into such a slice
+		// See http://code.google.com/p/go-wiki/wiki/InterfaceSlice for details
+		scanArgs := make([]interface{}, len(values))
+		for i := range values {
+			scanArgs[i] = &values[i]
+		}
+
+		// Fetch rows
+		for rows.Next() {
+			// get RawBytes from data
+			err = rows.Scan(scanArgs...)
+			if err != nil {
+				log.Println("mysql Query return err with :", err)
+				return result, err
+			}
+		}
+
+		// Now do something with the data.
+		// Here we just print each column as a string.
+		var value string
+		for i, col := range values {
+			// Here we can check if the value is nil (NULL value)
+			if col == nil {
+				value = "NULL"
+			} else {
+				value = string(col)
+			}
+			result[columns[i]] = value
+		}
+	}
+	return result, err
+}
+
+func getStatus(username, password string, interval time.Duration, sbm int) {
 
 	firstCheck := true
 	db, err := sql.Open("mysql", username+":"+password+"@/")
@@ -56,53 +106,21 @@ func getStatus(username, password string, interval time.Duration) {
 		dbSlave := false
 		dbRuns := false
 
-		rows, err := db.Query("show variables like 'read_only';")
-		if err == nil {
+		if result, err := getQueryResult(db, "show variables like 'read_only';"); err == nil {
 			dbRuns = true
-			if err := rows.Err(); err == nil {
-				for rows.Next() {
-					var name, value string
-					if err := rows.Scan(&name, &value); err != nil {
-						log.Println("mysql Open return err with :", err)
-					} else {
-						log.Printf("mysql Open return with name=%v value=%v\n", name, value)
-						if value == "OFF" {
-							dbMaster = true
-							break
-						}
-					}
-
-				}
+			if result["read_only"] == "OFF" {
+				dbMaster = true
 			}
-			rows.Close()
-
-		} else {
-			log.Println("mysql Open return err with :", err)
 		}
 
 		if !dbMaster {
-			//chech the if slave avaliable to use
-			rows, err = db.Query("SHOW SLAVE STATUS;")
-			if err == nil {
+			if result, err := getQueryResult(db, "show slave status;"); err == nil {
 				dbRuns = true
-				if err := rows.Err(); err == nil {
-					for rows.Next() {
-						var name, value string
-						if err := rows.Scan(&name, &value); err != nil {
-							log.Println("mysql Open return err with :", err)
-						} else {
-							log.Printf("mysql Open return with name=%v value=%v\n", name, value)
-							if value == "OFF" {
-								dbSlave = false
-								break
-							}
-						}
-
+				if v, ok := result["Seconds_Behind_Master"]; !ok {
+					if sbmVal, ok := strconv.Atoi(v); ok != nil && sbmVal <= sbm {
+						dbSlave = true
 					}
 				}
-				rows.Close()
-			} else {
-				log.Println("mysql Open return err with :", err)
 			}
 		}
 
@@ -122,10 +140,11 @@ func main() {
 	username := flag.String("u", "", "user name")
 	password := flag.String("p", "", "password")
 	interval := flag.Int64("i", 1, "interval of the check")
+	sbm := flag.Int("sbm", 150, "Second behind master threshold")
 
 	log.Println("mysql_ms_checker start")
 	//Goroutines
-	go getStatus(*username, *password, time.Duration(*interval))
+	go getStatus(*username, *password, time.Duration(*interval), *sbm)
 	<-hasStatus
 
 	log.Println("mysql_ms_checker finish getStatus")
