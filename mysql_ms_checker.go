@@ -8,6 +8,7 @@ import "strconv"
 import "database/sql"
 import _ "github.com/go-sql-driver/mysql"
 import "github.com/golang/glog"
+import "code.google.com/p/gcfg"
 
 var gDBRuns bool = false
 
@@ -153,12 +154,34 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 	}
 }
 
+type CFG struct {
+	username string
+	password string
+	host     string
+	interval int
+	sbm      int
+	port     string
+}
+
 func main() {
-	username := flag.String("u", "", "user name")
-	password := flag.String("p", "", "password")
-	host := flag.String("h", "localhost:3306", "host")
-	interval := flag.Int64("i", 1, "interval of the check")
-	sbm := flag.Int("sbm", 150, "Second behind master threshold")
+	cfg := CFG{
+		username: "mha",
+		password: "",
+		host:     "locahost:3306",
+		interval: 1,
+		sbm:      150,
+		port:     ":3300",
+	}
+
+	cfgFile := flag.String("cfg", "./mysql_ms_checker.cfg", "configuration file for mysql master/slaver checher")
+	if err := gcfg.ReadFileInto(&cfg, *cfgFile); err != nil {
+		glog.V(0).Info("Failed to parse gcfg data: %s", err)
+	}
+	username := flag.String("u", cfg.username, "user name")
+	password := flag.String("p", cfg.password, "password")
+	host := flag.String("h", cfg.host, "host")
+	interval := flag.Int("i", cfg.interval, "interval of the check")
+	sbm := flag.Int("sbm", cfg.sbm, "Second behind master threshold")
 
 	flag.Parse()
 
@@ -174,7 +197,7 @@ func main() {
 	http.Handle("/checkSlave", http.HandlerFunc(checkSlave))
 	http.Handle("/checkLiveSlave", http.HandlerFunc(checkLiveSlave))
 
-	err := http.ListenAndServe(":3000", nil)
+	err := http.ListenAndServe(cfg.port, nil)
 	if err != nil {
 		glog.Fatalf("ListenAndServe: %s", err)
 	}
