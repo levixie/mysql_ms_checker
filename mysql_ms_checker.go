@@ -1,13 +1,13 @@
 package main
 
 import "fmt"
-import "log"
 import "net/http"
 import "flag"
 import "time"
 import "strconv"
 import "database/sql"
 import _ "github.com/go-sql-driver/mysql"
+import "github.com/golang/glog"
 
 var gDBRuns bool = false
 
@@ -42,14 +42,13 @@ func checkLiveSlave(w http.ResponseWriter, req *http.Request) {
 }
 
 func getQueryResult(db *sql.DB, query string) (result map[string]string, err error) {
-	//var result map[string]string
-	rows, err := db.Query(query)
-	defer rows.Close()
-
-	if err == nil {
+	result = make(map[string]string)
+	var rows *sql.Rows
+	if rows, err = db.Query(query); err == nil {
+		defer rows.Close()
 		columns, err := rows.Columns()
 		if err != nil {
-			log.Println("mysql Query return err with :", err)
+			glog.V(2).Info("mysql Query return err with :", err)
 			return result, err
 		}
 
@@ -67,9 +66,8 @@ func getQueryResult(db *sql.DB, query string) (result map[string]string, err err
 		// Fetch rows
 		for rows.Next() {
 			// get RawBytes from data
-			err = rows.Scan(scanArgs...)
-			if err != nil {
-				log.Println("mysql Query return err with :", err)
+			if err = rows.Scan(scanArgs...); err != nil {
+				glog.V(2).Info("mysql rows scan eturn err with :", err)
 				return result, err
 			}
 		}
@@ -86,7 +84,12 @@ func getQueryResult(db *sql.DB, query string) (result map[string]string, err err
 			}
 			result[columns[i]] = value
 		}
+
+		glog.V(2).Info("mysql Query return :", result)
+	} else {
+		glog.V(2).Info("mysql Query return error :", err)
 	}
+
 	return result, err
 }
 
@@ -97,7 +100,7 @@ func getStatus(username, password string, interval time.Duration, sbm int) {
 	defer db.Close()
 
 	if err != nil {
-		log.Println("mysql Open return err with :", err)
+		glog.V(2).Info("mysql Open return err with :", err)
 	}
 
 	for {
@@ -108,7 +111,7 @@ func getStatus(username, password string, interval time.Duration, sbm int) {
 
 		if result, err := getQueryResult(db, "show variables like 'read_only';"); err == nil {
 			dbRuns = true
-			if result["read_only"] == "OFF" {
+			if result["Value"] == "OFF" {
 				dbMaster = true
 			}
 		}
@@ -116,23 +119,37 @@ func getStatus(username, password string, interval time.Duration, sbm int) {
 		if !dbMaster {
 			if result, err := getQueryResult(db, "show slave status;"); err == nil {
 				dbRuns = true
-				if v, ok := result["Seconds_Behind_Master"]; !ok {
+				if v, ok := result["Seconds_Behind_Master"]; ok {
 					if sbmVal, ok := strconv.Atoi(v); ok != nil && sbmVal <= sbm {
 						dbSlave = true
 					}
 				}
+			} else {
+				glog.V(2).Info("Query failed with error ", err)
 			}
 		}
 
-		gDBMaster = dbMaster
-		gDBSlave = dbSlave
-		gDBRuns = dbRuns
+		if gDBMaster != dbMaster {
+			glog.V(1).Info("DBMaster status change to ", dbMaster)
+			gDBMaster = dbMaster
+		}
+
+		if gDBSlave != dbSlave {
+			glog.V(1).Info("DBSlave status change to ", dbSlave)
+			gDBSlave = dbSlave
+		}
+
+		if gDBRuns != dbRuns {
+			glog.V(1).Info("DBRuns status change to ", dbRuns)
+			gDBRuns = dbRuns
+		}
 
 		if firstCheck {
 			hasStatus <- true
 			firstCheck = false
 		}
 		time.Sleep(interval * time.Second)
+		glog.Flush()
 	}
 }
 
@@ -142,12 +159,14 @@ func main() {
 	interval := flag.Int64("i", 1, "interval of the check")
 	sbm := flag.Int("sbm", 150, "Second behind master threshold")
 
-	log.Println("mysql_ms_checker start")
+	flag.Parse()
+
+	glog.V(1).Info("mysql_ms_checker start")
 	//Goroutines
 	go getStatus(*username, *password, time.Duration(*interval), *sbm)
 	<-hasStatus
 
-	log.Println("mysql_ms_checker finish getStatus")
+	glog.V(1).Info("mysql_ms_checker finish getStatus")
 
 	// your http.Handle calls here
 	http.Handle("/checkMaster", http.HandlerFunc(checkMaster))
@@ -156,7 +175,7 @@ func main() {
 
 	err := http.ListenAndServe(":3000", nil)
 	if err != nil {
-		log.Fatal("ListenAndServe:", err)
+		glog.Fatalf("ListenAndServe: %s", err)
 	}
-	log.Println("mysql_ms_checker end")
+	glog.V(1).Info("mysql_ms_checker end")
 }
