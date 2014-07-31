@@ -149,39 +149,46 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 			hasStatus <- true
 			firstCheck = false
 		}
-		time.Sleep(interval * time.Second)
+
 		glog.Flush()
+		time.Sleep(interval * time.Second)
 	}
 }
 
+type SETTINGS struct {
+	Username string
+	Password string
+	Host     string
+	Interval int
+	Sbm      int
+	Port     string
+}
+
 type CFG struct {
-	username string
-	password string
-	host     string
-	interval int
-	sbm      int
-	port     string
+	Settings SETTINGS
 }
 
 func main() {
 	cfg := CFG{
-		username: "mha",
-		password: "",
-		host:     "locahost:3306",
-		interval: 1,
-		sbm:      150,
-		port:     ":3300",
+		Settings: SETTINGS{
+			Username: "mha",
+			Password: "",
+			Host:     "locahost:3306",
+			Interval: 1,
+			Sbm:      150,
+			Port:     ":3300",
+		},
 	}
 
 	cfgFile := flag.String("cfg", "./mysql_ms_checker.cfg", "configuration file for mysql master/slaver checher")
 	if err := gcfg.ReadFileInto(&cfg, *cfgFile); err != nil {
 		glog.V(0).Info("Failed to parse gcfg data: %s", err)
 	}
-	username := flag.String("u", cfg.username, "user name")
-	password := flag.String("p", cfg.password, "password")
-	host := flag.String("h", cfg.host, "host")
-	interval := flag.Int("i", cfg.interval, "interval of the check")
-	sbm := flag.Int("sbm", cfg.sbm, "Second behind master threshold")
+	username := flag.String("u", cfg.Settings.Username, "user name")
+	password := flag.String("p", cfg.Settings.Password, "password")
+	host := flag.String("h", cfg.Settings.Host, "host")
+	interval := flag.Int("i", cfg.Settings.Interval, "interval of the check")
+	sbm := flag.Int("sbm", cfg.Settings.Sbm, "Second behind master threshold")
 
 	flag.Parse()
 
@@ -197,7 +204,7 @@ func main() {
 	http.Handle("/checkSlave", http.HandlerFunc(checkSlave))
 	http.Handle("/checkLiveSlave", http.HandlerFunc(checkLiveSlave))
 
-	err := http.ListenAndServe(cfg.port, nil)
+	err := http.ListenAndServe(cfg.Settings.Port, nil)
 	if err != nil {
 		glog.Fatalf("ListenAndServe: %s", err)
 	}
