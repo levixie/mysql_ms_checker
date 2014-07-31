@@ -6,7 +6,7 @@ import "flag"
 import "time"
 import "strconv"
 import "database/sql"
-import _ "github.com/go-sql-driver/mysql"
+import "github.com/go-sql-driver/mysql"
 import "github.com/golang/glog"
 import "code.google.com/p/gcfg"
 
@@ -99,6 +99,7 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 	firstCheck := true
 	db, err := sql.Open("mysql", username+":"+password+"@tcp("+host+")/")
 	defer db.Close()
+	mysql.SetLogger(LoggerFunc(glog.V(0).Info))
 
 	if err != nil {
 		glog.V(1).Info("mysql Open return err with :", err)
@@ -166,6 +167,20 @@ type SETTINGS struct {
 
 type CFG struct {
 	Settings SETTINGS
+}
+
+/*type MyLoggerT struct {
+}
+
+func (MyLoggerT) Print(v ...interface{}) {
+	glog.V(0).Info(v)
+}
+*/
+
+type LoggerFunc func(v ...interface{})
+
+func (f LoggerFunc) Print(v ...interface{}) {
+	f(v)
 }
 
 func main() {
