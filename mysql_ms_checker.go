@@ -93,14 +93,14 @@ func getQueryResult(db *sql.DB, query string) (result map[string]string, err err
 	return result, err
 }
 
-func getStatus(username, password string, interval time.Duration, sbm int) {
+func getStatus(host, username, password string, interval time.Duration, sbm int) {
 
 	firstCheck := true
-	db, err := sql.Open("mysql", username+":"+password+"@/")
+	db, err := sql.Open("mysql", username+":"+password+"@tcp("+host+")/")
 	defer db.Close()
 
 	if err != nil {
-		glog.V(2).Info("mysql Open return err with :", err)
+		glog.V(1).Info("mysql Open return err with :", err)
 	}
 
 	for {
@@ -156,6 +156,7 @@ func getStatus(username, password string, interval time.Duration, sbm int) {
 func main() {
 	username := flag.String("u", "", "user name")
 	password := flag.String("p", "", "password")
+	host := flag.String("h", "localhost:3306", "host")
 	interval := flag.Int64("i", 1, "interval of the check")
 	sbm := flag.Int("sbm", 150, "Second behind master threshold")
 
@@ -163,7 +164,7 @@ func main() {
 
 	glog.V(1).Info("mysql_ms_checker start")
 	//Goroutines
-	go getStatus(*username, *password, time.Duration(*interval), *sbm)
+	go getStatus(*host, *username, *password, time.Duration(*interval), *sbm)
 	<-hasStatus
 
 	glog.V(1).Info("mysql_ms_checker finish getStatus")
