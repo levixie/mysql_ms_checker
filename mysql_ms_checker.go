@@ -120,7 +120,7 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 			if result, err := getQueryResult(db, "show slave status;"); err == nil {
 				dbRuns = true
 				if v, ok := result["Seconds_Behind_Master"]; ok {
-					if sbmVal, ok := strconv.Atoi(v); ok != nil && sbmVal <= sbm {
+					if sbmVal, ok := strconv.Atoi(v); ok == nil && sbmVal <= sbm {
 						dbSlave = true
 					}
 				}
