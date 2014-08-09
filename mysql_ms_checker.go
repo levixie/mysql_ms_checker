@@ -4,11 +4,28 @@ import "fmt"
 import "net/http"
 import "flag"
 import "time"
+import "sync"
 import "strconv"
 import "database/sql"
 import "github.com/go-sql-driver/mysql"
 import "github.com/golang/glog"
 import "code.google.com/p/gcfg"
+
+type SETTINGS struct {
+	Username      string
+	Password      string
+	Host          string
+	Interval      int
+	Sbm           int
+	Port          string
+	MaxDelayAllow int
+}
+
+type CFG struct {
+	Settings SETTINGS
+}
+
+var cfg CFG
 
 var gDBRuns bool = false
 
@@ -16,9 +33,16 @@ var gDBMaster bool = false
 
 var gDBSlave bool = false
 
-var hasStatus = make(chan bool)
+var gLastCheckTime time.Time
+
+var gDelayAllow time.Duration
 
 func checkMaster(w http.ResponseWriter, req *http.Request) {
+	if gLastCheckTime.Add(gDelayAllow).Before(time.Now()) {
+		http.Error(w, "MySQL is not running as master", http.StatusServiceUnavailable)
+		glog.V(1).Info("max delay excceed")
+	}
+
 	if gDBMaster {
 		fmt.Fprint(w, "MySQL is running as master.\r\n")
 	} else {
@@ -27,6 +51,11 @@ func checkMaster(w http.ResponseWriter, req *http.Request) {
 }
 
 func checkSlave(w http.ResponseWriter, req *http.Request) {
+	if gLastCheckTime.Add(gDelayAllow).Before(time.Now()) {
+		http.Error(w, "MySQL is not running as master", http.StatusServiceUnavailable)
+		glog.V(1).Info("max delay excceed")
+	}
+
 	if gDBSlave {
 		fmt.Fprint(w, "MySQL is running as slave.\r\n")
 	} else {
@@ -35,6 +64,11 @@ func checkSlave(w http.ResponseWriter, req *http.Request) {
 }
 
 func checkLiveSlave(w http.ResponseWriter, req *http.Request) {
+	if gLastCheckTime.Add(gDelayAllow).Before(time.Now()) {
+		http.Error(w, "MySQL is not running as master", http.StatusServiceUnavailable)
+		glog.V(1).Info("max delay excceed")
+	}
+
 	if gDBRuns {
 		fmt.Fprint(w, "MySQL is running as live slave.\r\n")
 	} else {
@@ -96,7 +130,7 @@ func getQueryResult(db *sql.DB, query string) (result map[string]string, err err
 
 func getStatus(host, username, password string, interval time.Duration, sbm int) {
 
-	firstCheck := true
+	var once sync.Once
 	db, err := sql.Open("mysql", username+":"+password+"@tcp("+host+")/")
 	defer db.Close()
 	mysql.SetLogger(LoggerFunc(glog.V(0).Info))
@@ -111,22 +145,40 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 		dbSlave := false
 		dbRuns := false
 
-		if result, err := getQueryResult(db, "show variables like 'read_only';"); err == nil {
-			dbRuns = true
-			if result["Value"] == "OFF" {
-				dbMaster = true
-			}
-		}
+		done := make(chan bool, 1)
 
-		if result, err := getQueryResult(db, "show slave status;"); err == nil {
-			dbRuns = true
-			if v, ok := result["Seconds_Behind_Master"]; ok {
-				if sbmVal, ok := strconv.Atoi(v); ok == nil && sbmVal <= sbm {
-					dbSlave = true
+		go func() {
+
+			if result, err := getQueryResult(db, "show variables like 'read_only';"); err == nil {
+				dbRuns = true
+				if result["Value"] == "OFF" {
+					dbMaster = true
 				}
 			}
-		} else {
-			glog.V(2).Info("Query failed with error ", err)
+
+			if result, err := getQueryResult(db, "show slave status;"); err == nil {
+				dbRuns = true
+				if v, ok := result["Seconds_Behind_Master"]; ok {
+					if sbmVal, ok := strconv.Atoi(v); ok == nil && sbmVal <= sbm {
+						dbSlave = true
+					} else {
+						glog.V(1).Info("Seconds_Behind_Master is ", v)
+					}
+				}
+			} else {
+				glog.V(2).Info("Query failed with error ", err)
+			}
+
+			done <- true
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(interval * time.Second):
+			dbMaster = false
+			dbSlave = false
+			dbRuns = false
+			glog.V(1).Info("MYSQL TIMEOUT!")
 		}
 
 		if gDBMaster != dbMaster {
@@ -144,27 +196,28 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 			gDBRuns = dbRuns
 		}
 
-		if firstCheck {
-			hasStatus <- true
-			firstCheck = false
-		}
+		gLastCheckTime = time.Now()
+
+		once.Do(startService)
 
 		glog.Flush()
 		time.Sleep(interval * time.Second)
 	}
 }
 
-type SETTINGS struct {
-	Username string
-	Password string
-	Host     string
-	Interval int
-	Sbm      int
-	Port     string
-}
+func startService() {
+	go func() {
+		// your http.Handle calls here
+		http.Handle("/checkMaster", http.HandlerFunc(checkMaster))
+		http.Handle("/checkSlave", http.HandlerFunc(checkSlave))
+		http.Handle("/checkLiveSlave", http.HandlerFunc(checkLiveSlave))
 
-type CFG struct {
-	Settings SETTINGS
+		err := http.ListenAndServe(cfg.Settings.Port, nil)
+		if err != nil {
+			glog.Fatalf("ListenAndServe: %s", err)
+		}
+	}()
+
 }
 
 /*type MyLoggerT struct {
@@ -182,14 +235,15 @@ func (f LoggerFunc) Print(v ...interface{}) {
 }
 
 func main() {
-	cfg := CFG{
+	cfg = CFG{
 		Settings: SETTINGS{
-			Username: "mha",
-			Password: "",
-			Host:     "locahost:3306",
-			Interval: 1,
-			Sbm:      150,
-			Port:     ":3300",
+			Username:      "mha",
+			Password:      "",
+			Host:          "locahost:3306",
+			Interval:      1,
+			Sbm:           150,
+			Port:          ":3300",
+			MaxDelayAllow: 5,
 		},
 	}
 
@@ -200,26 +254,14 @@ func main() {
 	username := flag.String("u", cfg.Settings.Username, "user name")
 	password := flag.String("p", cfg.Settings.Password, "password")
 	host := flag.String("h", cfg.Settings.Host, "host")
-	interval := flag.Int("i", cfg.Settings.Interval, "interval of the check")
+	interval := flag.Int("i", cfg.Settings.Interval, "interval of the check as second")
 	sbm := flag.Int("sbm", cfg.Settings.Sbm, "Second behind master threshold")
 
 	flag.Parse()
+	gDelayAllow = time.Duration(cfg.Settings.MaxDelayAllow) * time.Second
+	glog.V(1).Info("max delay allow is:", gDelayAllow)
 
 	glog.V(1).Info("mysql_ms_checker start")
-	//Goroutines
-	go getStatus(*host, *username, *password, time.Duration(*interval), *sbm)
-	<-hasStatus
-
-	glog.V(1).Info("mysql_ms_checker finish getStatus")
-
-	// your http.Handle calls here
-	http.Handle("/checkMaster", http.HandlerFunc(checkMaster))
-	http.Handle("/checkSlave", http.HandlerFunc(checkSlave))
-	http.Handle("/checkLiveSlave", http.HandlerFunc(checkLiveSlave))
-
-	err := http.ListenAndServe(cfg.Settings.Port, nil)
-	if err != nil {
-		glog.Fatalf("ListenAndServe: %s", err)
-	}
+	getStatus(*host, *username, *password, time.Duration(*interval), *sbm)
 	glog.V(1).Info("mysql_ms_checker end")
 }
