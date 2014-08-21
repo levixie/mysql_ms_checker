@@ -79,11 +79,16 @@ func checkLiveSlave(w http.ResponseWriter, req *http.Request) {
 func getQueryResult(db *sql.DB, query string) (result map[string]string, err error) {
 	result = make(map[string]string)
 	var rows *sql.Rows
+
+	glog.V(2).Info("start getQueryResult ", query)
+	glog.V(2).Info("start query ", query)
 	if rows, err = db.Query(query); err == nil {
 		defer rows.Close()
+
+		glog.V(2).Info("End query ", query)
 		columns, err := rows.Columns()
 		if err != nil {
-			glog.V(2).Info("mysql Query return err with :", err)
+			glog.V(1).Info("mysql Query return err with :", err)
 			return result, err
 		}
 
@@ -99,13 +104,17 @@ func getQueryResult(db *sql.DB, query string) (result map[string]string, err err
 		}
 
 		// Fetch rows
+
+		glog.V(2).Info("start fetch ")
 		for rows.Next() {
 			// get RawBytes from data
 			if err = rows.Scan(scanArgs...); err != nil {
-				glog.V(2).Info("mysql rows scan eturn err with :", err)
+				glog.V(1).Info("mysql rows scan eturn err with :", err)
 				return result, err
 			}
 		}
+
+		glog.V(2).Info("end fetch ")
 
 		// Now do something with the data.
 		// Here we just print each column as a string.
@@ -122,8 +131,10 @@ func getQueryResult(db *sql.DB, query string) (result map[string]string, err err
 
 		glog.V(2).Info("mysql Query return :", result)
 	} else {
-		glog.V(2).Info("mysql Query return error :", err)
+		glog.V(1).Info("mysql Query return error :", err)
 	}
+
+	glog.V(2).Info("end getQueryResult ", query)
 
 	return result, err
 }
@@ -140,6 +151,8 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 	}
 
 	for {
+		gLastCheckTime = time.Now()
+		glog.V(2).Info("start checking")
 		//check if the server is master
 		dbMaster := false
 		dbSlave := false
@@ -166,20 +179,22 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 					}
 				}
 			} else {
-				glog.V(2).Info("Query failed with error ", err)
+				glog.V(1).Info("Query failed with error ", err)
 			}
 
 			done <- true
 		}()
 
+		timer := time.NewTimer(interval * time.Millisecond)
 		select {
 		case <-done:
-		case <-time.After(interval * time.Second):
+		case <-timer.C:
 			dbMaster = false
 			dbSlave = false
 			dbRuns = false
 			glog.V(1).Info("MYSQL TIMEOUT!")
 		}
+		timer.Stop()
 
 		if gDBMaster != dbMaster {
 			glog.V(1).Info("DBMaster status change to ", dbMaster)
@@ -196,12 +211,12 @@ func getStatus(host, username, password string, interval time.Duration, sbm int)
 			gDBRuns = dbRuns
 		}
 
-		gLastCheckTime = time.Now()
+		sleepInterval := interval*time.Millisecond - time.Now().Sub(gLastCheckTime)
 
 		once.Do(startService)
 
-		glog.Flush()
-		time.Sleep(interval * time.Second)
+		glog.V(2).Info("end checking with sleep ", sleepInterval)
+		time.Sleep(sleepInterval)
 	}
 }
 
@@ -258,7 +273,7 @@ func main() {
 	sbm := flag.Int("sbm", cfg.Settings.Sbm, "Second behind master threshold")
 
 	flag.Parse()
-	gDelayAllow = time.Duration(cfg.Settings.MaxDelayAllow) * time.Second
+	gDelayAllow = time.Duration(cfg.Settings.MaxDelayAllow) * time.Millisecond
 	glog.V(1).Info("max delay allow is:", gDelayAllow)
 
 	glog.V(1).Info("mysql_ms_checker start")
